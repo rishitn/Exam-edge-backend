@@ -26,7 +26,7 @@ export async function attemptRoutes(app: FastifyInstance) {
     "/",
     {
       preHandler: [authenticate],
-      config: { rateLimit: RateLimits.standard },
+      config: { rateLimit: RateLimits.default },
     },
     asyncHandler(async (request, reply) => {
       const { testId } = StartAttemptSchema.parse(request.body);

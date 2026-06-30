@@ -1,68 +1,127 @@
 import jwt from "jsonwebtoken";
 import { env } from "../config/env";
-import { UserJwtPayload, AdminJwtPayload } from "../types";
-import { Errors } from "../utils/errors";
-import { generateId } from "../utils/crypto";
 
 // =============================================================================
-// JWT Token Service
-// Access tokens: short-lived (15m), verified on every request
-// Refresh tokens: long-lived (30d), stored in DB, rotated on each use
+// JWT tokens — access (short-lived) and refresh (long-lived)
 // =============================================================================
 
-export function signAccessToken(payload: Omit<UserJwtPayload | AdminJwtPayload, "jti" | "iat" | "exp">): string {
-  const jti = generateId();
+export interface BaseJwtPayload {
+  sub: string;       // subject — userId or adminId
+  type: "user" | "admin";
+  jti: string;       // unique token id (for blacklisting)
+  iat: number;       // issued at (seconds)
+  exp: number;       // expires at (seconds)
+}
+
+export interface UserJwtPayload extends BaseJwtPayload {
+  type: "user";
+  email?: string;
+  mobile?: string;
+}
+
+export interface AdminJwtPayload extends BaseJwtPayload {
+  type: "admin";
+  email: string;
+  assignedExams: string[];
+  isSuperAdmin: boolean;
+}
+
+export type AnyJwtPayload = UserJwtPayload | AdminJwtPayload;
+
+// =============================================================================
+// Type helpers for properly distributing Omit over union types
+// =============================================================================
+type UserJwtSignPayload = Omit<UserJwtPayload, "jti" | "iat" | "exp">;
+type AdminJwtSignPayload = Omit<AdminJwtPayload, "jti" | "iat" | "exp">;
+
+const { JWT_ACCESS_SECRET, JWT_REFRESH_SECRET } = env;
+
+// ---------------------------------------------------------------------------
+// ACCESS TOKEN — 15 minutes
+// ---------------------------------------------------------------------------
+export function signAccessToken(payload: UserJwtSignPayload | AdminJwtSignPayload): string {
   return jwt.sign(
-    { ...payload, jti },
-    env.JWT_ACCESS_SECRET,
-    { expiresIn: env.JWT_ACCESS_EXPIRY as jwt.SignOptions["expiresIn"] }
+    { ...payload },
+    JWT_ACCESS_SECRET,
+    { expiresIn: "15m" } // 900 seconds
   );
 }
 
-export function signRefreshToken(payload: Omit<UserJwtPayload | AdminJwtPayload, "jti" | "iat" | "exp">): string {
-  const jti = generateId();
+// ---------------------------------------------------------------------------
+// REFRESH TOKEN — 30 days
+// ---------------------------------------------------------------------------
+export function signRefreshToken(payload: UserJwtSignPayload | AdminJwtSignPayload): string {
   return jwt.sign(
-    { ...payload, jti },
-    env.JWT_REFRESH_SECRET,
-    { expiresIn: env.JWT_REFRESH_EXPIRY as jwt.SignOptions["expiresIn"] }
+    { ...payload },
+    JWT_REFRESH_SECRET,
+    { expiresIn: "30d" }
   );
 }
 
-export function verifyAccessToken(token: string): UserJwtPayload | AdminJwtPayload {
-  try {
-    return jwt.verify(token, env.JWT_ACCESS_SECRET) as UserJwtPayload | AdminJwtPayload;
-  } catch (err) {
-    if (err instanceof jwt.TokenExpiredError) {
-      throw Errors.tokenExpired();
-    }
-    throw Errors.tokenInvalid();
-  }
+// ---------------------------------------------------------------------------
+// VERIFY
+// ---------------------------------------------------------------------------
+export function verifyAccessToken(token: string): AnyJwtPayload {
+  return jwt.verify(token, JWT_ACCESS_SECRET) as AnyJwtPayload;
 }
 
-export function verifyRefreshToken(token: string): UserJwtPayload | AdminJwtPayload {
-  try {
-    return jwt.verify(token, env.JWT_REFRESH_SECRET) as UserJwtPayload | AdminJwtPayload;
-  } catch (err) {
-    if (err instanceof jwt.TokenExpiredError) {
-      throw Errors.tokenExpired();
-    }
-    throw Errors.tokenInvalid();
-  }
+export function verifyRefreshToken(token: string): AnyJwtPayload {
+  return jwt.verify(token, JWT_REFRESH_SECRET) as AnyJwtPayload;
 }
 
-// Decode without verifying (for extracting expiry from expired tokens)
-export function decodeToken(token: string): UserJwtPayload | AdminJwtPayload | null {
-  try {
-    return jwt.decode(token) as UserJwtPayload | AdminJwtPayload | null;
-  } catch {
-    return null;
-  }
+// ---------------------------------------------------------------------------
+// DECODE (no signature verification)
+// ---------------------------------------------------------------------------
+export function decodeToken(token: string): AnyJwtPayload | null {
+  const decoded = jwt.decode(token);
+  if (!decoded || typeof decoded !== "object") return null;
+  return decoded as AnyJwtPayload;
 }
 
-// Get remaining TTL of a token in seconds (for Redis blacklist TTL)
+// ---------------------------------------------------------------------------
+// UTILITIES
+// ---------------------------------------------------------------------------
+
+/** How many seconds until this token expires? (0 if already expired / malformed) */
 export function getTokenRemainingTtl(token: string): number {
-  const decoded = decodeToken(token);
-  if (!decoded?.exp) return 0;
-  const remaining = decoded.exp - Math.floor(Date.now() / 1000);
-  return Math.max(0, remaining);
+  try {
+    const decoded = jwt.decode(token) as { exp?: number } | null;
+    if (!decoded?.exp) return 0;
+    return Math.max(0, decoded.exp - Math.floor(Date.now() / 1000));
+  } catch {
+    return 0;
+  }
+}
+
+/** Has this token already expired? */
+export function isTokenExpired(token: string): boolean {
+  return getTokenRemainingTtl(token) <= 0;
+}
+
+// =============================================================================
+// Middleware helpers
+// =============================================================================
+
+/** Create a payload for the given entity type */
+export function makeTokenPayload(
+  entityType: "user" | "admin",
+  entityId: string,
+  extras?: Omit<Partial<AnyJwtPayload>, "sub" | "type">
+): UserJwtSignPayload | AdminJwtSignPayload {
+  const base = { sub: entityId, type: entityType };
+  if (entityType === "admin") {
+    return {
+      ...base,
+      type: "admin",
+      email: (extras as any)?.email ?? "",
+      assignedExams: (extras as any)?.assignedExams ?? [],
+      isSuperAdmin: (extras as any)?.isSuperAdmin ?? false,
+    };
+  }
+  return {
+    ...base,
+    type: "user",
+    email: (extras as any)?.email ?? undefined,
+    mobile: (extras as any)?.mobile ?? undefined,
+  };
 }

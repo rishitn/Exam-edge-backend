@@ -273,10 +273,8 @@ export async function verifyOtp(
 
   if (!user) {
     // REGISTER: create new user
-    if (input.purpose === "REGISTER" || !input.name) {
-      if (!input.name) {
-        throw Errors.badRequest("Name is required for registration", ErrorCode.INVALID_INPUT);
-      }
+    if (input.purpose === "REGISTER" && !input.name) {
+      throw Errors.badRequest("Name is required for registration", ErrorCode.INVALID_INPUT);
     }
     user = await prisma.user.create({
       data: {
@@ -531,4 +529,3 @@ async function handleFailedLogin(userId: string, currentAttempts: number): Promi
     log.warn({ userId }, `Account locked after ${newAttempts} failed login attempts`);
   }
 }
-

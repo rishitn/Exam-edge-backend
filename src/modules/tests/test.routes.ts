@@ -40,7 +40,7 @@ export async function testRoutes(app: FastifyInstance) {
     "/",
     {
       preHandler: [authenticateAdmin],
-      config: { rateLimit: RateLimits.standard },
+      config: { rateLimit: RateLimits.default },
     },
     asyncHandler(async (request, reply) => {
       const input = CreateTestSchema.parse(request.body);

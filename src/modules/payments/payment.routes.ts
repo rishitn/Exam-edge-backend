@@ -106,18 +106,25 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /webhook ───────────────────────────────────────────────────────────
   // Razorpay calls this server-to-server.
   // Auth: HMAC-SHA256 of raw body against RAZORPAY_WEBHOOK_SECRET.
-  // IMPORTANT: We need the raw body — Fastify's default JSON parser would
-  // destroy it. We register this route with addContentTypeParser to get Buffer.
-  app.addContentTypeParser(
-    "application/json",
-    { parseAs: "buffer", bodyLimit: 512 * 1024 },
-    function (_req, body, done) {
-      done(null, body); // pass raw Buffer through; we parse it manually in the handler
-    }
-  );
-
+  // IMPORTANT: We register a custom content-type parser scoped ONLY to the
+  // webhook route via Fastify's route-level parser.  The default JSON parser
+  // used by all other payment routes above is left untouched.
   app.post(
     "/webhook",
+    {
+      // Use Fastify's preParsing hook to capture raw body for this route only
+      preParsing: async (request, reply, payload) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of payload) {
+          chunks.push(chunk);
+        }
+        // Attach raw buffer to request for use in handler
+        (request as any).rawBody = Buffer.concat(chunks);
+        // Return a new stream so Fastify doesn't complain
+        const { Readable } = await import("stream");
+        return Readable.from([Buffer.concat(chunks)]);
+      },
+    },
     asyncHandler(async (request, reply) => {
       const signature = request.headers["x-razorpay-signature"] as string;
 
@@ -126,8 +133,13 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ error: "Missing signature" });
       }
 
-      // body is a Buffer here (see addContentTypeParser above)
-      await handleWebhook(request.body as Buffer, signature);
+      const rawBody = (request as any).rawBody as Buffer;
+      if (!rawBody) {
+        log.warn("Webhook received without raw body");
+        return reply.code(400).send({ error: "Missing body" });
+      }
+
+      await handleWebhook(rawBody, signature);
 
       // Always 200 OK — Razorpay retries on non-2xx
       return reply.code(200).send({ received: true });

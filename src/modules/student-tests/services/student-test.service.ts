@@ -46,7 +46,6 @@ const TEST_DETAIL_SELECT = {
       order: true,
       exam: true,
       description: true,
-      timeLimitMinutes: true,
       totalQuestions: true,
       requiredAttempts: true,
     },
@@ -335,7 +334,7 @@ export async function getTestAttemptSummary(testId: string, userId: string) {
     select: {
       id: true,
       status: true,
-      score: true,
+      rawScore: true,
       percentile: true,
       startedAt: true,
       submittedAt: true,

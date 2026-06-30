@@ -10,12 +10,16 @@ import crypto from "crypto";
 export async function requestContextPlugin(app: FastifyInstance): Promise<void> {
   // Add request ID to every request (use client-provided ID or generate one)
   app.addHook("onRequest", async (request, reply) => {
+    // Use client-provided X-Request-ID header, or generate a new one.
+    // IMPORTANT: Do NOT overwrite Fastify's built-in request.id — it's used
+    // internally by Fastify for request logging. Instead, store our trace ID
+    // in a separate property.
     const requestId =
       (request.headers["x-request-id"] as string) ||
       crypto.randomBytes(8).toString("hex");
 
-    // Make it available on request object
-    (request as any).id = requestId;
+    // Store in a separate property to avoid conflicting with Fastify's own id
+    (request as any).traceId = requestId;
 
     // Echo it back in response headers
     reply.header("X-Request-ID", requestId);
